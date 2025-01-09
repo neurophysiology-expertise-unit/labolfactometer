@@ -1,4 +1,3 @@
-#!/home/michiel/Programs/bin/python
 import serial
 import warnings
 import asyncio
