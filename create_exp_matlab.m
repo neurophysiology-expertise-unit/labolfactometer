@@ -1,4 +1,4 @@
-function experiment_txt_generator_Tinbergen_Robin_v2(Novelty_task, meanITI)
+function create_exp_matlab(Novelty_task, meanITI)
 %Function generates an experiment .txt file which can be loaded into LV to run a novelty task.
 
 %First define some defaults================================================
@@ -8,8 +8,6 @@ board_ID=1:n_boards;
 if nargin<1
     Novelty_task = 0;
 end
-
-Novelty_task = 0
 
 if nargin<2
     meanITI = 15000; %mean of the distribution for the random number generation (in ms) % meanITI for Left-Right of José is 20s
