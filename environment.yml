@@ -8,3 +8,10 @@ channels:
 
 dependencies:
   - python
+  - numpy
+  - scipy
+  - pyserial
+  - asyncio
+
+
+
