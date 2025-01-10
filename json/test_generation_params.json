@@ -1,0 +1,37 @@
+{
+    "n_boards": 1,
+    "n_valves": 7,
+    "meanITI": 1500,
+    "ITI_min": 1000,
+    "ITI_max": 2000,
+    "trl_start": 0,
+    "trl_end": 12000,
+    "n_familiar_odors": 6,
+    "n_presentations": 1,
+    "ON": {
+        "odor": 4000
+    },
+    "OFF": {
+        "odor": 6000
+    },
+    "bits": {
+        "thermal_cam": 16,
+        "odor_ID": [8, 9, 10, 11, 12, 13, 14, 15],
+        "opto_stim": 7,
+        "rewardID": [4, 5, 6],
+        "punishID": [1, 2, 3]
+    },
+    "punish_ON": "001",
+    "punish_OFF": "000",
+    "reward_ON": "001",
+    "reward_OFF": "000",
+    "opto_stim_ON": "1",
+    "opto_stim_OFF": "0",
+    "thermal_cam_ON": "1",
+    "thermal_cam_OFF": "0",
+    "familiar_odor_sequence": [1, 2, 3, 4, 5, 6],
+    "save_mat_file": false,
+    "turn_off_punishment": true,
+    "turn_off_reward": true,
+    "turn_off_opto": true
+}

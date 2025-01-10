@@ -20,10 +20,34 @@ def generate_events(params):
     events = []
     for i in range(params["n_valves"]):
         events.append(np.array([
-            [params["punish_OFF"], params["reward_OFF"], params["opto_stim_OFF"], odor_OFF, params["thermal_cam_ON"]],
-            [params["punish_OFF"], params["reward_OFF"], params["opto_stim_OFF"], odor_ID[i], params["thermal_cam_OFF"]],
-            [params["punish_OFF"], params["reward_OFF"], params["opto_stim_OFF"], odor_OFF, params["thermal_cam_OFF"]],
-            [params["punish_OFF"], params["reward_OFF"], params["opto_stim_OFF"], odor_OFF, params["thermal_cam_OFF"]]
+            [
+                params["punish_OFF"],
+                params["reward_OFF"],
+                params["opto_stim_OFF"],
+                odor_OFF,
+                params["thermal_cam_ON"]
+            ],
+            [
+                params["punish_OFF"],
+                params["reward_OFF"],
+                params["opto_stim_OFF"],
+                odor_ID[i],
+                params["thermal_cam_OFF"]
+            ],
+            [
+                params["punish_OFF"],
+                params["reward_OFF"],
+                params["opto_stim_OFF"],
+                odor_OFF,  # Ensure odor is off
+                params["thermal_cam_OFF"]
+            ],
+            [
+                params["punish_OFF"],
+                params["reward_OFF"],
+                params["opto_stim_OFF"],
+                odor_OFF,
+                params["thermal_cam_OFF"]
+            ]
         ]))
     return events
 
@@ -36,12 +60,6 @@ def generate_valve_commands(params):
         valve_id = (i % 7) + 1
         board_valve_ids.append(f"{board_id},{valve_id}")
 
-    # Create 'blank' entries for all boards
-    blank_entries = []
-    for board_num in range(1, params["n_boards"] + 1):
-        blank_entries.append(f"{board_num},1")
-    blank = ";".join(blank_entries)
-
     # Construct the 'valves' list with correct board and valve IDs
     valves = []
     for i in range(params["n_valves"]):
@@ -51,7 +69,8 @@ def generate_valve_commands(params):
                 valve_entry.append(board_valve_ids[i])
             else:
                 valve_entry.append(f"{board_num},1")  # Default valve for other boards
-        valves.append([blank, ";".join(valve_entry), blank, blank])
+        
+        valves.append([";".join(valve_entry), "1,1"])
 
     return valves
 
@@ -83,17 +102,33 @@ def assemble_experiment_file_data(params, session, ITI):
 
     # Flatten intervals and insert ITIs
     tmp3 = np.concatenate([interval.flatten() for interval in session_intervals])
-    tmp3[::4] = ITI
+    
+    # Insert ITIs at the correct positions (after every 4 events)
+    ITI_idx = np.arange(3, len(tmp3), 4) 
+    tmp3 = np.insert(tmp3, ITI_idx, ITI)
 
     # Calculate cumulative sum of times for col1
-    col1 = np.cumsum(tmp3)
+    event_times = []
+    current_time = 0
+    for i, interval in enumerate(session_intervals):
+        trial_times = np.cumsum(interval.flatten())
+        trial_times += current_time  # Add the current time to the trial times
+        current_time = trial_times[-1] + ITI[i % len(ITI)]  # Update current time for the next trial
+        event_times.append(trial_times)
+
+    # Flatten the updated event times for col1
+    col1 = np.concatenate(event_times)
 
     # Prepare events for col2
     col2_flat = np.concatenate(session_events)
     col2_str = ["".join(event.astype(str)) for event in col2_flat]
 
     # Prepare valves for col3
-    col3_str_all = [";".join(valve) for valve in session_valves]
+    col3_str_all = []
+    for i, valve_commands in enumerate(session_valves):
+        # Repeat each valve command twice
+        col3_str_all.extend([valve_commands[0]] * 1)  # First command once (open)
+        col3_str_all.extend([valve_commands[1]] * 3)  # Second command three time (close)
 
     return col1, col2_str, col3_str_all
 
@@ -103,9 +138,8 @@ def save_text_file(col1, col2_str, col3_str, filename):
         f.write("Delta T [ms]\t16-bit pattern\tBoard ID,Valve ID;... \n")
         event_count = 0
         for i in range(len(col3_str)):
-            for j in range(4):
-                f.write(f"{col1[event_count]}\t{col2_str[event_count]}\t{col3_str[i]}\n")
-                event_count += 1
+            f.write(f"{col1[event_count]}\t{col2_str[event_count]}\t{col3_str[i]}\n")
+            event_count += 1
 
 def save_mat_file(params, col1, col2_flat, col3_str, bits, filename):
     """Saves the experiment data to a .mat file (optional)."""
@@ -193,5 +227,5 @@ def generate_experiment_file(json_filepath):
 
 # --- Example Usage (if running this file directly) ---
 if __name__ == "__main__":
-    json_filepath = "input_params.json"
+    json_filepath = "experiment_generation_params.json"  # Use the correct JSON filename
     generate_experiment_file(json_filepath)

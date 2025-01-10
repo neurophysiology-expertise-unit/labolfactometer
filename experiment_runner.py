@@ -3,10 +3,18 @@ import serial
 import asyncio
 import csv
 from datetime import datetime
-import json
 import numpy as np
+from scipy.stats import expon, truncnorm
+import json
+import sys
+import warnings
+import glob
+import os
 
-# --- Constants (make sure these match the values in experiment_generator.py) ---
+# Import functions from io_utils.py
+from io_utils import detect_serial_port, read_json_params, read_experiment_file
+
+# --- Constants ---
 SOF = 0x0F
 EOF = 0x04
 DLE = 0x05
@@ -14,7 +22,6 @@ DRIVE = 0x44
 
 # --- Serial Communication Functions ---
 def command_string(board_id, valve, command=DRIVE):
-    # ... (same as in experiment_generator.py)
     """Generates command bytes for a given valve on a given PCB board
 
     >>> [hex(x) for x in command_string("04049F01", 4, DRIVE)]
@@ -48,7 +55,7 @@ class SerialOlfactometer(serial.Serial):
 
     """
 
-    BOARDS = ["0D02C01E", "0D02B016", "0D02B015", "0D02B01E", "0D02C019"]
+    BOARDS = ["0D02B017", "0D02B016", "0D02B015", "0D02B01E", "0D02C019"]
 
     def __init__(self, port="/dev/ttyUSB0", baudrate=57600, bytesize=serial.EIGHTBITS, timeout=None, **kwargs):
         """Create connection to the solenodrive"""
@@ -109,14 +116,17 @@ def read_experiment_file(filepath):
 async def run_experiment(experiment_file, olf_serial, log_file, params, bits):
     """
     Loads and runs the experiment based on the .txt file using the SerialOlfactometer object.
-    Logs valve actions to the log_file.
+    Logs valve actions to the log_file and prints information to the console.
     """
     experiment_data = read_experiment_file(experiment_file)
     start_time = time.time() * 1000  # Convert to milliseconds
 
+    # Keep track of the previous state of each odor bit for each valve
+    valve_states = {}  # Dictionary to track valve states: {(board_id, valve_id): {bit_index: state}}
+
     with open(log_file, 'w', newline='') as csvfile:
         log_writer = csv.writer(csvfile)
-        log_writer.writerow(["Timestamp", "Event Type", "Valve ID", "Pattern"])
+        log_writer.writerow(["Timestamp", "Event Type", "Board ID", "Valve ID", "Bit Index", "Previous State", "New State"])
 
         for event in experiment_data:
             elapsed_time = time.time() * 1000 - start_time
@@ -130,22 +140,56 @@ async def run_experiment(experiment_file, olf_serial, log_file, params, bits):
             board_id = int(board_id_str)
             valve_id = int(valve_id_str)
 
-            olf_serial.write(command_string(olf_serial.BOARDS[board_id - 1], valve_id))
+            # Get the board ID from the list of boards
+            board_id_hex = olf_serial.BOARDS[board_id - 1]
 
-            # Log the event
+            # Send the command
+            olf_serial.write(command_string(board_id_hex, valve_id))
+
+            # Log the event and print to console
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
 
-            # Determine if it's an open or close event based on the pattern
-            if event["pattern"][15 - bits["odor_ID"][0]] == '1':
-                event_type = "Valve Open"
-            else:
-                event_type = "Valve Close"
+            # Iterate through the odor bits and check for changes
+            for bit_index in range(bits["odor_ID"][0], bits["odor_ID"][-1] + 1):
+                bit_pos = 15 - bit_index
+                new_state = event["pattern"][bit_pos]
 
-            log_writer.writerow([current_time, event_type, event["valve_id"], event["pattern"]])
+                # Ensure the valve state for this board_id, valve_id, and bit_index is initialized
+                if (board_id, valve_id) not in valve_states:
+                    valve_states[(board_id, valve_id)] = {}
 
+                # Get the previous state, defaulting to 'unknown' if not set
+                prev_state = valve_states.get((board_id, valve_id), {}).get(bit_index, 'unknown')
+
+                # Log the event if the state has changed
+                if new_state != prev_state:
+                    if new_state == '0':
+                        event_type = "Odor Bit OFF"
+                    else:
+                        event_type = "Odor Bit ON"
+
+                    log_writer.writerow([current_time, event_type, board_id, valve_id, bit_index, prev_state, new_state])
+                    print(f"Time: {current_time} - Board {board_id}, Valve {valve_id}, Bit {bit_index}: {prev_state} -> {new_state}")
+
+                    # Update the valve state
+                    valve_states.setdefault((board_id, valve_id), {})[bit_index] = new_state
 async def main():
-    json_filepath = "input_params.json"  # You might want to make this an argument
-    params = read_json_params(json_filepath)
+    # Check if an experiment file is provided as a command-line argument
+    if len(sys.argv) > 1:
+        experiment_file = sys.argv[1]
+        # Extract the directory of the experiment file
+        experiment_file_dir = os.path.dirname(experiment_file)
+        # Construct the path to the JSON file in the same directory
+        json_filepath = os.path.join(experiment_file_dir, "input_params.json")
+    else:
+        # Ask the user for the JSON file path
+        json_filepath = input("Please enter the path to the experiment JSON file: ")
+
+    # Check if the JSON file exists
+    if not os.path.exists(json_filepath):
+        raise FileNotFoundError(f"JSON file not found: {json_filepath}")
+
+    params = read_json_params(json_filepath)  # Use the imported function
 
     # --- Define bits ---
     bits = {
@@ -156,27 +200,24 @@ async def main():
         "punishID": np.array(params["bits"]["punishID"])
     }
 
-    experiment_file = "Experiment_10012025_011248.txt"  # Replace with your experiment file
     log_file = f"Experiment_log_{datetime.now().strftime('%d%m%Y_%H%M%S')}.csv"
 
+    # --- Detect the serial port using the function from io_utils.py ---
+    serial_port = detect_serial_port()
+    if serial_port is None:
+        raise OSError("No suitable serial port found.")
+
+    # Print the detected port
+    print(f"Using serial port: {serial_port}")
+
     # Create an instance of SerialOlfactometer
-    olf_serial = SerialOlfactometer(port=params["serial_port"])
-    olf_serial.set_boards([params["board_ids"]])
+    olf_serial = SerialOlfactometer(port=serial_port)
+    olf_serial.set_boards(params["board_ids"])
 
     # Run the experiment
     await run_experiment(experiment_file, olf_serial, log_file, params, bits)
 
     olf_serial.close()
-
-# --- Helper function to read JSON parameters (you can also put this in a separate utils.py file)
-def read_json_params(json_filepath):
-    """Reads and returns parameters from a JSON file."""
-    try:
-        with open(json_filepath, 'r') as f:
-            params = json.load(f)
-    except:
-        raise Exception("Error reading or decoding JSON file.")
-    return params
 
 # --- Example Usage ---
 if __name__ == "__main__":

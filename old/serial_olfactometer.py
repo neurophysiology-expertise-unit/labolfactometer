@@ -44,7 +44,7 @@ class OlfSerial(serial.Serial):
 
     BOARDS = ["0D02C01E", "0D02B016", "0D02B015", "0D02B01E", "0D02C019"]
 
-    def __init__(self, port="/dev/ttyUSB0", baudrate=57600, bytesize=serial.EIGHTBITS, timeout=None, **kwargs):
+    def __init__(self, port="COM3", baudrate=57600, bytesize=serial.EIGHTBITS, timeout=None, **kwargs):
         """Create connection to the solenodrive"""
         if baudrate != 57600:
             warnings.warn("Baudrate used by solenodrive is 57600")
@@ -87,9 +87,9 @@ class OlfSerial(serial.Serial):
 
 
 if __name__ == '__main__':
-    print(command_string("0D02C01E", 5))
-    # ser = OlfSerial()
-    # for i in range(5):
-    #     for j in range(2,9):
-    #         ser.stimulate(8*i+j, 0.5)
-    # ser.close()
+    print(command_string("0D02B017", 5))
+    ser = OlfSerial()
+    for i in range(5):
+        for j in range(2,9):
+            ser.stimulate(8*i+j, 0.5)
+    ser.close()
