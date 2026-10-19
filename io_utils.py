@@ -47,10 +47,14 @@ def read_experiment_file(filepath):
     with open(filepath, 'r') as f:
         next(f)  # Skip header line
         for line in f:
+            if not line.strip():
+                continue
             parts = line.strip().split('\t')
             experiment_data.append({
                 "time": int(parts[0]),
                 "pattern": parts[1],
-                "valve_id": parts[2]
+                "valve_id": parts[2],
+                # "1,1;2,1;3,2" -> [(1, 1), (2, 1), (3, 2)]
+                "valves": [tuple(int(x) for x in bv.split(',')) for bv in parts[2].split(';')]
             })
     return experiment_data

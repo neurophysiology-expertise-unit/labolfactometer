@@ -11,7 +11,8 @@ dependencies:
   - numpy
   - scipy
   - pyserial
-  - asyncio
-
-
-
+  - nptdms
+  - tk
+  - pip
+  - pip:
+      - nidaqmx  # also needs the NI-DAQmx driver installed on the rig PC

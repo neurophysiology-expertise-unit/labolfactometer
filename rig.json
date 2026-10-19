@@ -1,0 +1,11 @@
+{
+    "serial_port": "COM3",
+    "board_ids": ["0D02B017", "0D02B016", "0D02B015", "0D02B01E", "0D02C019"],
+    "use_daq": true,
+    "ai_channels": "Dev1/ai0:15",
+    "ai_fs": 1000,
+    "ai_terminal": "RSE",
+    "pattern_lines": "Dev1/port0/line0:15",
+    "counter_lines": "Dev1/port1/line0:6",
+    "output_dir": ""
+}
