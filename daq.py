@@ -5,6 +5,8 @@ runner still work without it (dry run / serial only).
 The .tdms layout matches the LabVIEW files: group "Measured Data", channels "AI0".."AI15",
 waveform properties wf_start_time / wf_increment / NI_ChannelName / unit_string.
 """
+from datetime import datetime, timezone
+
 import numpy as np
 from nptdms import ChannelObject, TdmsWriter
 
@@ -59,7 +61,8 @@ class Acquisition:
 
     def start(self):
         self.writer.open()
-        self.t_start = np.datetime64("now", "us")
+        # UTC with microseconds, like LabVIEW (np.datetime64("now") truncates to seconds)
+        self.t_start = np.datetime64(datetime.now(timezone.utc).replace(tzinfo=None), "us")
         self.task.start()
 
     def _on_chunk(self, task_handle, event_type, n, callback_data):
