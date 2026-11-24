@@ -3,8 +3,10 @@
 Needs `nidaqmx` (and NI-DAQmx drivers) on the rig PC; imported lazily so the GUI and the
 runner still work without it (dry run / serial only).
 The .tdms layout matches the LabVIEW files: group "Measured Data", channels "AI0".."AI15",
-waveform properties wf_start_time / wf_increment / NI_ChannelName / unit_string.
+waveform properties wf_start_time / wf_increment / NI_ChannelName / unit_string, plus a .tdms_index file
+(segment headers only; readers use it to open the file faster and work without it).
 """
+import time
 from datetime import datetime, timezone
 
 import numpy as np
@@ -19,8 +21,9 @@ def bits(value, n):
 class DigitalOut:
     """16-bit event pattern + 7-bit event counter on static DO lines.
 
-    The pattern string's last character is bit 0 (thermal cam), so with lines "Dev1/port0/line0:15"
-    line0 = last character. Reverse the line range ("line15:0") if the wiring is the other way round.
+    The pattern string goes out in reading order, as LabVIEW wrote it: character k to the k-th line of
+    `pattern_lines` (first character -> port1/line0). On the rig the facecam line follows character 1,
+    high until the trial's last row. The counter is a number: bit k to line k of `counter_lines`.
     """
 
     def __init__(self, pattern_lines, counter_lines):
@@ -34,7 +37,9 @@ class DigitalOut:
 
     def write(self, pattern, counter):
         pat, cnt = self.tasks
-        pat.write(bits(int(pattern, 2), pat.number_of_channels))
+        if len(pattern) != pat.number_of_channels:
+            raise ValueError(f"pattern {pattern!r} has {len(pattern)} characters for {pat.number_of_channels} lines")
+        pat.write([c == "1" for c in pattern])
         cnt.write(bits(counter, cnt.number_of_channels))
 
     def close(self):
@@ -45,7 +50,7 @@ class DigitalOut:
 class Acquisition:
     """Continuous analog input written to a .tdms file in `chunk`-sample segments (LabVIEW used 300)."""
 
-    def __init__(self, channels, fs, path, terminal="RSE", chunk=300):
+    def __init__(self, channels, fs, path, terminal="RSE", chunk=300, keep=60):
         import nidaqmx
         from nidaqmx.constants import AcquisitionType, TerminalConfiguration
         self.path, self.chunk, self.fs = path, chunk, fs
@@ -54,9 +59,10 @@ class Acquisition:
         self.task.timing.cfg_samp_clk_timing(fs, sample_mode=AcquisitionType.CONTINUOUS, samps_per_chan=fs * 10)
         self.names = [c.physical_channel.name for c in self.task.ai_channels]  # "Dev1/ai0", ...
         self.task.register_every_n_samples_acquired_into_buffer_event(chunk, self._on_chunk)
-        self.writer = TdmsWriter(path)
+        self.writer = TdmsWriter(str(path), index_file=True)  # also <path>_index, as LabVIEW writes
         self.n_samples = 0
         self.last = np.zeros(len(self.names))  # latest value per channel, for the GUI
+        self.recent = np.zeros((len(self.names), int(fs * keep)))  # ring buffer of the last `keep` s, for the GUI
         self.error = None
 
     def start(self):
@@ -74,12 +80,26 @@ class Acquisition:
                     "wf_start_time": self.t_start, "wf_start_offset": 0.0, "wf_increment": 1 / self.fs,
                     "NI_ChannelName": name, "unit_string": "Volts"} if first else {})
                 for k, name in enumerate(self.names)])
-            self.n_samples += data.shape[1]
-            self.last = data[:, -1]
+            self.remember(data)
         except Exception as e:  # surfaced in the GUI; acquisition stops instead of dying silently
             self.error = e
             return 1
         return 0
+
+    def remember(self, data):
+        """Append a (channels, n) chunk to the ring buffer and the sample count."""
+        size, n = self.recent.shape[1], data.shape[1]
+        kept = data[:, -size:]
+        self.recent[:, (self.n_samples + n - kept.shape[1] + np.arange(kept.shape[1])) % size] = kept
+        self.n_samples += n
+        self.t_chunk = time.perf_counter()  # when the newest sample arrived, to place the traces in time
+        self.last = data[:, -1]
+
+    def recent_data(self, seconds):
+        """The last `seconds` (at most `keep`) of every channel, oldest first."""
+        size = self.recent.shape[1]
+        n = min(self.n_samples, int(seconds * self.fs), size)
+        return self.recent[:, (self.n_samples - n + np.arange(n)) % size]
 
     def stop(self):
         self.task.stop()

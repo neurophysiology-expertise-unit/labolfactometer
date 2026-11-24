@@ -26,8 +26,9 @@ SOF = 0x0F
 EOF = 0x04
 DLE = 0x05
 DRIVE = 0x44
+BATCH1_PREFIX = [0x05, 0x05]  # data bytes before the 2-byte address of batch 1 boards (LabVIEW BuildCommand.vi)
 BLANK_VALVE = 1  # valve 1 of every board is the blank (clean air) line
-COUNTER_START = 0b1111111  # LabVIEW writes all-ones before the first event
+COUNTER_START = 0b1111111  # LabVIEW logs all-ones before the first event (logged only, not written to DO)
 
 
 # --- Serial Communication Functions ---
@@ -36,11 +37,15 @@ def command_string(board_id, valve, command=DRIVE):
 
     >>> [hex(x) for x in command_string("04049F01", 4, DRIVE)]
     ['0xf', '0x5', '0x4', '0x5', '0x4', '0x9f', '0x1', '0x44', '0x34', '0x0', '0x0', '0x4']
+    >>> command_string("1A3A", 2).hex(" ")
+    '0f 05 05 05 05 1a 3a 44 32 00 00 04'
 
-    The valve goes out as ASCII ('4' = 0x34). The original example expected a raw 0x04;
-    the code has always added 0x30, so check on the rig which one the solenodrive takes.
+    The valve goes out as ASCII ('4' = 0x34). The original example expected a raw 0x04, but on the
+    rig (29-10-2026) the boards switch on ASCII and ignore the raw byte. No ENABLE (0x45) is needed.
+    Batch 1 boards have a 2-byte address and older firmware: they need BATCH1_PREFIX before the
+    address, as in LabVIEW's VISA trace (checked on the rig with boards 1B25 and 1A3A).
 
-    :param str board_id: Address of the board as a string of 4 bytes (e.g. '0A05F2DE')
+    :param str board_id: Address of the board as a string of 4 bytes (e.g. '0A05F2DE'), or 2 bytes for batch 1
     :param int valve: valve on the PCB board to send command to (1..8)
     :param int command: command to send to the channel: 0x44 = drive channel, 0x45: Enable relais driver, 0x49: Idle relais driver
     :returns bytearray of at least 10 bytes containing the command to be relayed to the solenodrive
@@ -49,6 +54,8 @@ def command_string(board_id, valve, command=DRIVE):
 
     valve += 0x30
     board_array = [int(board_id[i:i+2], 16) for i in range(0, len(board_id), 2)]
+    if len(board_array) == 2:
+        board_array = BATCH1_PREFIX + board_array
     command_array = board_array + [command, valve]
     ind = 0
     while ind < len(command_array):
@@ -101,11 +108,11 @@ def stamp(dt=None):
     return dt.strftime("%d%m%Y_%H%M%S,") + f"{dt.microsecond // 1000:03d}"
 
 
-def wait_until(t, stop):
-    """Sleep until perf_counter() >= t; return False if `stop` was set first."""
+def wait_until(t, stop, pause=None):
+    """Sleep until perf_counter() >= t; return False if `stop` (or `pause`) was set first."""
     while True:
         left = t - time.perf_counter()
-        if stop.is_set():
+        if stop.is_set() or (pause is not None and pause.is_set()):
             return False
         if left <= 0:
             return True
@@ -119,16 +126,42 @@ def all_blank(olf, n_boards):
         olf.drive(b, BLANK_VALVE)
 
 
-def run_experiment(rows, olf, log_dir, log_stem, dio=None, stop=None, on_event=None):
+def paused(olf, n_boards, dio, counter, pause, stop, on_pause, log_path, next_row, t_start):
+    """Blank valves and pattern lines until `pause` is cleared (or `stop` set); return the pause length in s."""
+    p0 = time.perf_counter()
+    all_blank(olf, n_boards)
+    if dio:
+        dio.write("0" * 16, counter)
+    if on_pause:
+        on_pause(True)
+    while pause.is_set() and not stop.is_set():
+        stop.wait(0.02)
+    p1 = time.perf_counter()
+    end = "stopped" if stop.is_set() else "resume"
+    with open(log_path, "a") as f:  # ms since the start of the run, like the DO logs
+        f.write(f"pause before row {next_row}\t{round((p0 - t_start) * 1000)}\t"
+                f"{end} after {round((p1 - p0) * 1000)} ms\t{stamp()}\n")
+    if on_pause and not stop.is_set():
+        on_pause(False)
+    return p1 - p0
+
+
+def run_experiment(rows, olf, log_dir, log_stem, dio=None, stop=None, on_event=None, pause=None, on_pause=None):
     """Play `rows` (io_utils.read_experiment_file) in real time.
 
     olf      : SerialOlfactometer or DryRunOlfactometer
     dio      : daq.DigitalOut or None (no NI board: patterns are only logged)
     stop     : threading.Event to abort; valves go back to blank and DO to 0 either way
     on_event : callback(i, n, row) after each row, for the GUI
+    pause    : threading.Event; while set, valves are blank and the pattern lines low, and the clock stops,
+               so on resume the next row comes after the time it still had left and all later rows shift
+               by the pause. The counter keeps its value, so a pause does not look like an extra event.
+               Pauses are logged to <log_stem>_<stamp>_Pauses.txt.
+    on_pause : callback(paused) for the GUI
     Returns the paths of the two DO logs.
     """
     stop = stop or threading.Event()
+    pause = pause or threading.Event()
     n_boards = max(len(r["valves"]) for r in rows)
     if n_boards > len(olf.board_ids):
         raise ValueError(f"the .txt drives {n_boards} boards but only {len(olf.board_ids)} board IDs are set")
@@ -140,21 +173,27 @@ def run_experiment(rows, olf, log_dir, log_stem, dio=None, stop=None, on_event=N
     paths = [os.path.join(log_dir, f"{log_stem}_{start}_{kind}.txt") for kind in ("NonTimedDO", "TimedDO")]
     with open(paths[0], "w") as nontimed, open(paths[1], "w") as timed:
         all_blank(olf, n_boards)
-        if dio:
-            dio.write(rows[0]["pattern"], COUNTER_START)
+        if dio:  # nothing is high before the first row; row 0 of the logs only copies LabVIEW's format
+            dio.write("0" * 16, 0)
         nontimed.write(f"0\t{rows[0]['pattern']}\t0\t{start}\n")
         timed.write(f"0\t{COUNTER_START:07b}\t0\t{start}\n")
-        t0 = time.perf_counter()
+        t_start = t0 = time.perf_counter()  # t0 moves later by every pause; t_start does not
+        counter = 0
         try:
             for i, row in enumerate(rows, 1):
-                if not wait_until(t0 + row["time"] / 1000, stop):
+                while not wait_until(t0 + row["time"] / 1000, stop, pause):
+                    if stop.is_set():
+                        break
+                    t0 += paused(olf, n_boards, dio, counter, pause, stop, on_pause,
+                                 os.path.join(log_dir, f"{log_stem}_{start}_Pauses.txt"), i, t_start)
+                if stop.is_set():
                     break
                 for board, valve in row["valves"]:
                     olf.drive(board, valve)
                 counter = (i - 1) % 128
                 if dio:
                     dio.write(row["pattern"], counter)
-                ms = round((time.perf_counter() - t0) * 1000)
+                ms = round((time.perf_counter() - t_start) * 1000)
                 nontimed.write(f"{i}\t{row['pattern']}\t{ms}\t{stamp()}\n")
                 timed.write(f"{i}\t{counter:07b}\t{ms}\t{stamp()}\n")
                 if on_event:

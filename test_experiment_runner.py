@@ -51,7 +51,31 @@ def replay(txt_path, speedup):
     return rows, olf, dio, paths
 
 
+def check_pause():
+    """Pause 300 ms between rows 1 and 2: valves blank, pattern lines low, counter held, later rows shifted."""
+    import threading
+    import time
+    rows = [{"time": t, "pattern": p, "valve_id": "", "valves": [(1, v), (2, 1)]}
+            for t, p, v in ((100, "1" * 16, 2), (200, "0" * 15 + "1", 3), (300, "0" * 16, 1))]
+    olf, dio, pause = DryRunOlfactometer(["1B25", "1A3A"]), FakeDIO(), threading.Event()
+    times, states = [], []
+    threading.Timer(0.15, pause.set).start()
+    threading.Timer(0.45, pause.clear).start()
+    t0 = time.perf_counter()
+    out = tempfile.mkdtemp()
+    run_experiment(rows, olf, out, "p", dio=dio, pause=pause,
+                   on_event=lambda i, n, r: times.append(time.perf_counter() - t0),
+                   on_pause=lambda p: states.append((p, list(olf.sent[-2:]), dio.written[-1], time.perf_counter())))
+    held = states[1][3] - states[0][3]  # actual pause; Timer can fire late on Windows
+    assert abs(times[0] - 0.1) < 0.02 and abs(times[1] - 0.2 - held) < 0.02 and abs(times[2] - 0.3 - held) < 0.02, \
+        (times, held)
+    assert states[0][:3] == (True, [(1, 1), (2, 1)], ("0" * 16, 0)), states  # blank, pattern low, counter of row 1
+    log = [f for f in os.listdir(out) if f.endswith("_Pauses.txt")]
+    assert len(log) == 1 and open(os.path.join(out, log[0])).read().startswith("pause before row 2")
+
+
 if __name__ == "__main__":
+    check_pause()
     assert doctest.testmod(experiment_runner).failed == 0
     if len(sys.argv) == 4:
         txt, lv_nontimed, lv_timed = sys.argv[1:]
@@ -73,6 +97,7 @@ if __name__ == "__main__":
     blank = [(b, 1) for b in range(1, n_boards + 1)]
     assert olf.sent[:n_boards] == blank and olf.sent[-n_boards:] == blank, "must start and end on blank"
     assert olf.sent[n_boards:-n_boards] == [bv for r in rows for bv in r["valves"]], "every row drives every board"
+    assert dio.written[0] == ("0" * 16, 0), "DO must stay at 0 until the first row"
     assert dio.written[-1] == ("0" * 16, 0), "DO must end at 0"
     assert [p for p, _ in dio.written[1:-1]] == [r["pattern"] for r in rows]
     print(f"ok: {len(rows)} events, {n_boards} boards, logs match LabVIEW")
